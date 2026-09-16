@@ -73,7 +73,9 @@ Coloque os seguintes arquivos no diretório raiz do computador CC:
 
 Para iniciar:
 ```bash
-startup
+startup              # Inicia no perfil salvo
+startup --potencia   # Inicia forçando perfil de MÁXIMA POTÊNCIA
+startup --eficiencia # Inicia forçando perfil de ECO EFICIÊNCIA
 ```
 
 ---
@@ -82,16 +84,31 @@ startup
 
 | Tecla | Ação | Descrição |
 |---|---|---|
+| `[P]` | **Alternar Perfil** | Alterna entre **MÁXIMA POTÊNCIA** (barras a 0%, geração máxima) e **ECO EFICIÊNCIA** (economia de urânio) |
 | `[R]` | **Gerar Relatório** | Salva um relatório analítico instantâneo em `relatorios/relatorio_*.txt` |
-| `[C]` | **Benchmark** | Executa a varredura da curva de eficiência e salva os resultados |
+| `[C]` | **Benchmark** | Executa a varredura e aponta a melhor potência bruta e melhor eficiência |
 | `[E]` | **SCRAM** | Alterna o desligamento de emergência manual (trava reator e turbinas) |
 | `[Q]` | **Sair** | Encerra o sistema com segurança e retorna ao prompt do shell |
+
+---
+
+## ⚙️ Perfis de Operação
+
+- **⚡ MÁXIMA POTÊNCIA (`POTENCIA`)**:
+  - As barras de controle são mantidas em **0%** para entregar a máxima taxa de reação e a maior geração de RF/t e Vapor/t possíveis.
+  - Acelera a queima sem limitar o reator a temperaturas baixas, operando até **1350°C** com freio térmico automático preventivo para nunca atingir o SCRAM de 1500°C.
+  - Nas turbinas, libera a vazão total de vapor suportada pelo hardware para o pico elétrico.
+- **🌱 ECO EFICIÊNCIA (`EFICIENCIA`)**:
+  - Modula suavemente as barras para manter a temperatura em torno de **650°C**, faixa onde a queima de urânio é mínima por cada RF produzido.
+  - Histerese de buffer (desliga quando a rede estiver cheia).
 
 ---
 
 ## ⚙️ Configurações Customizáveis (`config.lua`)
 
 Você pode editar `config.lua` ou alterar os valores no arquivo:
+- `perfil_operacao`: `"potencia"` ou `"eficiencia"`.
+- `reator.temp_max_potencia`: Temperatura teto de trabalho em potência máxima (padrão: `1350°C`).
 - `reator.buffer_energia_min`: Porcentagem mínima de energia antes de ligar o reator (padrão: `25%`).
 - `reator.buffer_energia_max`: Porcentagem máxima de energia antes de reduzir/desligar (padrão: `88%`).
 - `reator.temp_alvo_combustivel`: Temperatura ideal para consumo eficiente (padrão: `650°C`).

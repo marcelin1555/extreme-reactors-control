@@ -16,6 +16,9 @@ M.padrao = {
     -- Modo de operacao: "auto" (detecta passivo ou ativo+turbina), "passivo", "ativo"
     modo_operacao = "auto",
 
+    -- Perfil de Operação: "eficiencia" (menor queima de combustível) ou "potencia" (máxima geração de RF/t e vapor)
+    perfil_operacao = "eficiencia",
+
     -- Parametros do Reator
     reator = {
         -- Limiares do Buffer de Energia (% de 0 a 100)
@@ -24,8 +27,9 @@ M.padrao = {
         buffer_energia_alvo = 60,  -- Ponto de equilibrio da modulacao suave
 
         -- Parametros Termicos (°C)
-        temp_alvo_combustivel = 650,  -- Temperatura ideal para consumo eficiente
+        temp_alvo_combustivel = 650,  -- Temperatura ideal para consumo eficiente (Perfil Eficiência)
         temp_max_segura = 950,        -- Acima disso o consumo cresce desproporcionalmente
+        temp_max_potencia = 1350,     -- Limite termico em modo Potencia (trabalha quente com seguranca)
         temp_scram = 1500,            -- Desligamento de emergencia forcado
 
         -- Barras de Controle (%)
@@ -488,6 +492,7 @@ function M.novo(cfg, perifericos)
         peri = perifericos,
         estado = M.ESTADOS.STANDBY,
         modo = "DESCONHECIDO", -- "PASSIVO" ou "ATIVO_TURBINA"
+        perfil = string.upper(cfg.ativo.perfil_operacao or "EFICIENCIA"), -- "EFICIENCIA" ou "POTENCIA"
         scram_manual = false,
         motivo_alerta = "Sistema iniciado",
         
@@ -503,6 +508,19 @@ function M.novo(cfg, perifericos)
             dados_recentes = {}
         }
     }
+
+    -- Alterna entre Perfil de Eficiencia (Economia) e Potencia Maxima
+    function c:alternarPerfil()
+        if self.perfil == "POTENCIA" then
+            self.perfil = "EFICIENCIA"
+        else
+            self.perfil = "POTENCIA"
+        end
+        self.cfg.ativo.perfil_operacao = string.lower(self.perfil)
+        pcall(self.cfg.salvar)
+        self.motivo_alerta = "Perfil alterado para: " .. self.perfil
+        return self.perfil
+    end
 
     -- Determina o modo de operacao automaticamente ou forca config
     function c:determinarModo()
@@ -576,53 +594,82 @@ function M.novo(cfg, perifericos)
             r.ejetarLixo()
         end
 
-        -- 3. Decisao de Ligado/Desligado (Histerese de Buffer)
-        if bufferPct >= cfgR.buffer_energia_max then
-            -- Buffer muito cheio: desliga ou barras em 100% para parar de queimar combustivel a toa
-            r.setBarras(100)
-            if bufferPct >= 96 then
-                r.setAtivo(false)
-            end
-            self.estado = M.ESTADOS.STANDBY
-            self.motivo_alerta = string.format("Buffer cheio (%.1f%%). Economizando combustivel.", bufferPct)
-            self.stats.barras_alvo = 100
-            return
-        end
-
-        if bufferPct <= cfgR.buffer_energia_min then
-            -- Buffer baixo: liga reator se estiver desligado
+        -- 3. Execução por Perfil de Operação
+        if self.perfil == "POTENCIA" then
+            -- =================================================================
+            -- PERFIL: POTÊNCIA MÁXIMA (Overdrive / Máxima Geração de RF/t)
+            -- =================================================================
             if not r.ativo() then
                 r.setAtivo(true)
             end
-            self.estado = M.ESTADOS.OPERANDO
+
+            local nivelFinal = 0 -- 0% de barras = potência máxima de reação!
+
+            -- Se a rede elétrica saturar completamente (>96%), protege o buffer
+            if bufferPct >= 96 then
+                nivelFinal = 100
+                if bufferPct >= 99 then
+                    r.setAtivo(false)
+                end
+                self.estado = M.ESTADOS.STANDBY
+                self.motivo_alerta = "[POTENCIA] Buffer cheio (96%+). Em pausa."
+            -- Freio térmico de segurança (se aproximar do limite alto de potência)
+            elseif tempComb >= cfgR.temp_max_potencia then
+                local excesso = tempComb - cfgR.temp_max_potencia
+                nivelFinal = math.min(95, math.floor(excesso * 2))
+                self.estado = M.ESTADOS.OPERANDO
+                self.motivo_alerta = string.format("[POTENCIA] Freio Termico: %d%% barras | Temp: %.1f C", nivelFinal, tempComb)
+            else
+                self.estado = M.ESTADOS.OPERANDO
+                self.motivo_alerta = string.format("[POTENCIA MAXIMA] Barras em 0%% | +%d RF/t | Temp: %.1f C",
+                    energiaRF, tempComb)
+            end
+
+            r.setBarras(nivelFinal)
+            self.stats.barras_alvo = nivelFinal
+
+        else
+            -- =================================================================
+            -- PERFIL: EFICIÊNCIA MÁXIMA (Eco / Economia de Urânio)
+            -- =================================================================
+            if bufferPct >= cfgR.buffer_energia_max then
+                r.setBarras(100)
+                if bufferPct >= 96 then
+                    r.setAtivo(false)
+                end
+                self.estado = M.ESTADOS.STANDBY
+                self.motivo_alerta = string.format("Buffer cheio (%.1f%%). Economizando combustivel.", bufferPct)
+                self.stats.barras_alvo = 100
+                return
+            end
+
+            if bufferPct <= cfgR.buffer_energia_min then
+                if not r.ativo() then
+                    r.setAtivo(true)
+                end
+                self.estado = M.ESTADOS.OPERANDO
+            end
+
+            if not r.ativo() and bufferPct < (cfgR.buffer_energia_max - 5) then
+                r.setAtivo(true)
+                self.estado = M.ESTADOS.OPERANDO
+            end
+
+            local span = math.max(1, cfgR.buffer_energia_max - cfgR.buffer_energia_min)
+            local fatorCarga = (bufferPct - cfgR.buffer_energia_min) / span
+            fatorCarga = math.max(0, math.min(1, fatorCarga))
+
+            local nivelBase = fatorCarga * 85
+            local excessoTermico = math.max(0, tempComb - cfgR.temp_alvo_combustivel)
+            local freioTermico = (excessoTermico / 20) * 1.5
+
+            local nivelFinal = math.min(99, math.max(0, math.floor(nivelBase + freioTermico)))
+
+            r.setBarras(nivelFinal)
+            self.stats.barras_alvo = nivelFinal
+            self.motivo_alerta = string.format("[ECO EFICIENCIA] Barras: %d%% | Temp: %.1f C | Buffer: %.1f%%",
+                nivelFinal, tempComb, bufferPct)
         end
-
-        -- Se estiver em standby mas abaixo do maximo, reativa suavemente
-        if not r.ativo() and bufferPct < (cfgR.buffer_energia_max - 5) then
-            r.setAtivo(true)
-            self.estado = M.ESTADOS.OPERANDO
-        end
-
-        -- 4. Modulacao Dinamica das Barras para Maxima Eficiencia
-        -- Mapeia a insercao das barras proporcionalmente ao estado da carga (20% -> 0% barras, 85% -> 90% barras)
-        local span = math.max(1, cfgR.buffer_energia_max - cfgR.buffer_energia_min)
-        local fatorCarga = (bufferPct - cfgR.buffer_energia_min) / span
-        fatorCarga = math.max(0, math.min(1, fatorCarga))
-
-        -- Nivel base derivado do buffer de energia
-        local nivelBase = fatorCarga * 85
-
-        -- Correcao termica: se o combustivel esquentar alem do alvo (650 C),
-        -- o consumo de uranio dispara sem aumentar proporcionalmente a energia.
-        -- Adiciona freio termico suave.
-        local excessoTermico = math.max(0, tempComb - cfgR.temp_alvo_combustivel)
-        local freioTermico = (excessoTermico / 20) * 1.5
-
-        local nivelFinal = math.min(99, math.max(0, math.floor(nivelBase + freioTermico)))
-
-        -- Aplica o novo nivel de barras
-        r.setBarras(nivelFinal)
-        self.stats.barras_alvo = nivelFinal
 
         -- Atualiza calculo de eficiencia instantanea (RF por mB de combustivel)
         if consumoMB > 0.00001 then
@@ -630,13 +677,9 @@ function M.novo(cfg, perifericos)
             if self.stats.eficiencia_media_rf_mb == 0 then
                 self.stats.eficiencia_media_rf_mb = eff
             else
-                -- Media movel exponencial
                 self.stats.eficiencia_media_rf_mb = (self.stats.eficiencia_media_rf_mb * 0.9) + (eff * 0.1)
             end
         end
-
-        self.motivo_alerta = string.format("Modulando barras: %d%% | Temp: %.1f C | Buffer: %.1f%%",
-            nivelFinal, tempComb, bufferPct)
     end
 
     -- Loop de controle para Modo Ativo + Turbinas
@@ -803,6 +846,7 @@ function M.novo(cfg, perifericos)
         local dados = {
             tempo = os and (os.date and os.date("%Y-%m-%d %H:%M:%S") or os.time()) or "0",
             modo = self.modo,
+            perfil = self.perfil,
             estado = self.estado,
             alerta = self.motivo_alerta,
             reator = nil,
@@ -917,6 +961,7 @@ function M.gerarRelatorioTexto(dados, pastaDestino)
     add("================================================================================")
     add(string.format(" Data da Coleta:     %s", dataStr))
     add(string.format(" Modo do Sistema:    %s", dados.modo or "DESCONHECIDO"))
+    add(string.format(" Perfil de Operacao: %s (%s)", dados.perfil or "EFICIENCIA", (dados.perfil == "POTENCIA") and "MAXIMA POTENCIA" or "ECO EFICIENCIA"))
     add(string.format(" Status Operacional: %s", dados.estado or "DESCONHECIDO"))
     add(string.format(" Alerta / Mensagem:  %s", dados.alerta or "Nenhum"))
     add("--------------------------------------------------------------------------------")
@@ -1130,11 +1175,17 @@ function M.executarBenchmark(controlador, cbProgresso)
     controlador.estado = estadoOriginal
     controlador:determinarModo()
 
-    -- Encontra o melhor patamar de eficiencia
-    local melhor = resultados[1]
+    -- Encontra o melhor patamar de eficiencia e o de melhor potencia
+    local melhorEff = resultados[1]
+    local melhorPot = resultados[1]
     for _, res in ipairs(resultados) do
-        if res.eficiencia_rf_mb > (melhor.eficiencia_rf_mb or 0) then
-            melhor = res
+        if res.eficiencia_rf_mb > (melhorEff.eficiencia_rf_mb or 0) then
+            melhorEff = res
+        end
+        local valPotAtual = (res.energia_rf_t and res.energia_rf_t > 0) and res.energia_rf_t or (res.vapor_mb_t or 0)
+        local valPotMelhor = (melhorPot.energia_rf_t and melhorPot.energia_rf_t > 0) and melhorPot.energia_rf_t or (melhorPot.vapor_mb_t or 0)
+        if valPotAtual > valPotMelhor then
+            melhorPot = res
         end
     end
 
@@ -1157,8 +1208,10 @@ function M.executarBenchmark(controlador, cbProgresso)
     end
 
     table.insert(linhasBench, "--------------------------------------------------------------------------------")
-    table.insert(linhasBench, string.format(" PONTO DE MAXIMA EFICIENCIA ENCONTRADO: Barras em %d%% (%s RF/mB)",
-        melhor.nivel_barras, formatarNumero(melhor.eficiencia_rf_mb)))
+    table.insert(linhasBench, string.format(" [★] MELHOR POTENCIA BRUTA:    Barras em %d%% (Gera %s RF/t | %s mB/t vapor)",
+        melhorPot.nivel_barras, formatarNumero(melhorPot.energia_rf_t), formatarNumero(melhorPot.vapor_mb_t)))
+    table.insert(linhasBench, string.format(" [★] MELHOR EFICIENCIA (ECO):  Barras em %d%% (%s RF/mB de combustivel)",
+        melhorEff.nivel_barras, formatarNumero(melhorEff.eficiencia_rf_mb)))
     table.insert(linhasBench, "================================================================================")
 
     local relatorioFinal = table.concat(linhasBench, "\n")
@@ -1258,7 +1311,16 @@ function M.novo(dispositivoSaida)
         if isColor then t.setTextColor(colors.yellow) end
         t.write(" EXTREME REACTORS ")
         if isColor then t.setTextColor(colors.white) end
-        t.write("| Modo: " .. (dados.modo == "ATIVO_TURBINA" and "REATOR+TURBINA" or "REATOR PASSIVO"))
+        
+        -- Perfil de Operação
+        local perfilTxt = (dados.perfil == "POTENCIA") and "[POTENCIA]" or "[EFICIENCIA]"
+        if isColor then
+            t.setTextColor((dados.perfil == "POTENCIA") and colors.magenta or colors.lime)
+        end
+        t.write(perfilTxt .. " ")
+
+        if isColor then t.setTextColor(colors.lightGray) end
+        t.write(dados.modo == "ATIVO_TURBINA" and "TURBINA" or "PASSIVO")
 
         local statusTxt = " [" .. tostring(dados.estado) .. "] "
         t.setCursorPos(math.max(1, w - #statusTxt + 1), 1)
@@ -1364,7 +1426,7 @@ function M.novo(dispositivoSaida)
         t.setBackgroundColor(colors.gray)
         t.clearLine()
         if isColor then t.setTextColor(colors.white) end
-        t.write(" [R] Relatorio  [C] Benchmark  [E] SCRAM  [Q] Sair")
+        t.write(" [P] Perfil  [R] Relatorio  [C] Benchmark  [E] SCRAM  [Q] Sair")
         t.setBackgroundColor(colors.black)
     end
 
@@ -1391,6 +1453,8 @@ if args[1] == "--ajuda" or args[1] == "-h" or args[1] == "--help" then
     print("=== Extreme Reactors Control ===")
     print("Uso: startup [opcoes]")
     print("  startup              Inicia o painel interativo")
+    print("  startup --potencia   Inicia forçando o perfil de Máxima Potência")
+    print("  startup --eficiencia Inicia forçando o perfil de Máxima Eficiência (Eco)")
     print("  startup --relatorio  Gera um relatorio instantaneo e sai")
     print("  startup --benchmark  Executa o teste da curva de rendimento e sai")
     return
@@ -1398,6 +1462,13 @@ end
 
 -- Carrega arquivo de configuracao salvo no disco, se existir
 config.carregar()
+
+-- Permite sobrescrever perfil pela linha de comando
+if args[1] == "--potencia" then
+    config.ativo.perfil_operacao = "potencia"
+elseif args[1] == "--eficiencia" then
+    config.ativo.perfil_operacao = "eficiencia"
+end
 
 -- Escaneia os componentes fisicos
 print("Escaneando perifericos...")
@@ -1481,8 +1552,18 @@ local function rotinaTeclado()
     while executando do
         local evento, tecla, isHeld = os.pullEvent("key")
 
+        -- Tecla [P]: Alternar Perfil (Eficiência vs Potência)
+        if tecla == keys.p then
+            local novoPerfil = ctrl:alternarPerfil()
+            local msgPerfil = "Perfil alterado para: " .. novoPerfil
+            uiTerm:notificar(msgPerfil)
+            if uiMon then uiMon:notificar(msgPerfil) end
+            local dados = ctrl:coletarSnapshot()
+            uiTerm:renderizar(dados)
+            if uiMon then uiMon:renderizar(dados) end
+
         -- Tecla [R]: Gerar Relatorio Instantaneo
-        if tecla == keys.r then
+        elseif tecla == keys.r then
             local dados = ctrl:coletarSnapshot()
             local ok, caminho = relatorios.gerarRelatorioTexto(dados)
             local msg = ok and ("Relatorio salvo: " .. fs.getName(caminho)) or "Erro ao salvar relatorio!"

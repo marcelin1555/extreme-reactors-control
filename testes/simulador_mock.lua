@@ -12,7 +12,7 @@ colors = {
 }
 
 -- Teclas
-keys = { r = 19, c = 46, e = 18, q = 16 }
+keys = { r = 19, c = 46, e = 18, q = 16, p = 25 }
 
 -- Terminal Mock
 term = {

@@ -169,9 +169,52 @@ def testar_benchmark():
         assert(res ~= nil, "Benchmark retornou nulo!")
         assert(#res == 5, "Deveriam ser 5 patamares de teste (0, 20, 40, 60, 80)!")
         assert(string.find(txt, "RESULTADO DO BENCHMARK"), "Relatorio de benchmark sem cabecalho!")
-        assert(string.find(txt, "PONTO DE MAXIMA EFICIENCIA"), "Ponto otimo nao identificado!")
+        assert(string.find(txt, "MELHOR POTENCIA"), "Ponto de melhor potencia nao identificado!")
+        assert(string.find(txt, "MELHOR EFICIENCIA"), "Ponto de melhor eficiencia nao identificado!")
     """)
     print("  [OK] Benchmark: Curva de teste e deteccao de ponto otimo executados com sucesso!\n")
+
+def testar_perfil_potencia():
+    print("--- [5/5] Teste do Perfil de Potencia Maxima ---")
+    lua = LuaRuntime(unpack_returned_tuples=True)
+    
+    lua.execute(f"""
+        package.path = package.path .. ';{DIR_PROJETO.as_posix()}/?.lua'
+        local Mock = require("testes.simulador_mock")
+        
+        local reator = Mock.criarReatorMock(false)
+        reator._energia = 3000000 -- buffer medio
+        peripheral.registrar("bottom", "extremereactor-reactorComputerPort", reator)
+        
+        local config = require("config")
+        local perifericos = require("perifericos")
+        local controlador = require("controlador")
+        local relatorios = require("relatorios")
+        
+        local peri = perifericos.escanear()
+        local ctrl = controlador.novo(config, peri)
+        
+        -- Altera perfil para POTENCIA
+        ctrl:alternarPerfil()
+        assert(ctrl.perfil == "POTENCIA", "Perfil deveria ser POTENCIA!")
+        
+        -- Executa ciclos
+        for i = 1, 5 do
+            reator:_simularTick()
+            ctrl:atualizar()
+        end
+        
+        -- Em modo de maxima potencia, as barras devem descer para 0% (ou minimo) para gerar o maximo de RF/t
+        local snap = ctrl:coletarSnapshot()
+        assert(snap.perfil == "POTENCIA", "Snapshot sem indicacao de perfil POTENCIA!")
+        assert(snap.barras_alvo == 0, "Em modo potencia maxima as barras devem ser 0%! Atual: " .. tostring(snap.barras_alvo))
+        
+        -- Confere se o relatorio reflete a maxima potencia
+        local okRel, _, relTxt = relatorios.gerarRelatorioTexto(snap, "relatorios/")
+        assert(okRel == true, "Falha ao gerar relatorio!")
+        assert(string.find(relTxt, "MAXIMA POTENCIA"), "Relatorio nao registrou perfil MAXIMA POTENCIA!")
+    """)
+    print("  [OK] Perfil Potencia Maxima: Barras em 0%, geracao bruta liberada e relatorio validado!\n")
 
 if __name__ == "__main__":
     try:
@@ -179,6 +222,7 @@ if __name__ == "__main__":
         testar_modo_passivo()
         testar_modo_turbinas()
         testar_benchmark()
+        testar_perfil_potencia()
         print("=========================================================")
         print("  TODOS OS TESTES AUTOMATIZADOS PASSARAM COM SUCESSO!     ")
         print("=========================================================")

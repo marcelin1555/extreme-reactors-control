@@ -19,6 +19,7 @@ function M.novo(cfg, perifericos)
         peri = perifericos,
         estado = M.ESTADOS.STANDBY,
         modo = "DESCONHECIDO", -- "PASSIVO" ou "ATIVO_TURBINA"
+        perfil = string.upper(cfg.ativo.perfil_operacao or "EFICIENCIA"), -- "EFICIENCIA" ou "POTENCIA"
         scram_manual = false,
         motivo_alerta = "Sistema iniciado",
         
@@ -34,6 +35,19 @@ function M.novo(cfg, perifericos)
             dados_recentes = {}
         }
     }
+
+    -- Alterna entre Perfil de Eficiencia (Economia) e Potencia Maxima
+    function c:alternarPerfil()
+        if self.perfil == "POTENCIA" then
+            self.perfil = "EFICIENCIA"
+        else
+            self.perfil = "POTENCIA"
+        end
+        self.cfg.ativo.perfil_operacao = string.lower(self.perfil)
+        pcall(self.cfg.salvar)
+        self.motivo_alerta = "Perfil alterado para: " .. self.perfil
+        return self.perfil
+    end
 
     -- Determina o modo de operacao automaticamente ou forca config
     function c:determinarModo()
@@ -107,53 +121,82 @@ function M.novo(cfg, perifericos)
             r.ejetarLixo()
         end
 
-        -- 3. Decisao de Ligado/Desligado (Histerese de Buffer)
-        if bufferPct >= cfgR.buffer_energia_max then
-            -- Buffer muito cheio: desliga ou barras em 100% para parar de queimar combustivel a toa
-            r.setBarras(100)
-            if bufferPct >= 96 then
-                r.setAtivo(false)
-            end
-            self.estado = M.ESTADOS.STANDBY
-            self.motivo_alerta = string.format("Buffer cheio (%.1f%%). Economizando combustivel.", bufferPct)
-            self.stats.barras_alvo = 100
-            return
-        end
-
-        if bufferPct <= cfgR.buffer_energia_min then
-            -- Buffer baixo: liga reator se estiver desligado
+        -- 3. Execução por Perfil de Operação
+        if self.perfil == "POTENCIA" then
+            -- =================================================================
+            -- PERFIL: POTÊNCIA MÁXIMA (Overdrive / Máxima Geração de RF/t)
+            -- =================================================================
             if not r.ativo() then
                 r.setAtivo(true)
             end
-            self.estado = M.ESTADOS.OPERANDO
+
+            local nivelFinal = 0 -- 0% de barras = potência máxima de reação!
+
+            -- Se a rede elétrica saturar completamente (>96%), protege o buffer
+            if bufferPct >= 96 then
+                nivelFinal = 100
+                if bufferPct >= 99 then
+                    r.setAtivo(false)
+                end
+                self.estado = M.ESTADOS.STANDBY
+                self.motivo_alerta = "[POTENCIA] Buffer cheio (96%+). Em pausa."
+            -- Freio térmico de segurança (se aproximar do limite alto de potência)
+            elseif tempComb >= cfgR.temp_max_potencia then
+                local excesso = tempComb - cfgR.temp_max_potencia
+                nivelFinal = math.min(95, math.floor(excesso * 2))
+                self.estado = M.ESTADOS.OPERANDO
+                self.motivo_alerta = string.format("[POTENCIA] Freio Termico: %d%% barras | Temp: %.1f C", nivelFinal, tempComb)
+            else
+                self.estado = M.ESTADOS.OPERANDO
+                self.motivo_alerta = string.format("[POTENCIA MAXIMA] Barras em 0%% | +%d RF/t | Temp: %.1f C",
+                    energiaRF, tempComb)
+            end
+
+            r.setBarras(nivelFinal)
+            self.stats.barras_alvo = nivelFinal
+
+        else
+            -- =================================================================
+            -- PERFIL: EFICIÊNCIA MÁXIMA (Eco / Economia de Urânio)
+            -- =================================================================
+            if bufferPct >= cfgR.buffer_energia_max then
+                r.setBarras(100)
+                if bufferPct >= 96 then
+                    r.setAtivo(false)
+                end
+                self.estado = M.ESTADOS.STANDBY
+                self.motivo_alerta = string.format("Buffer cheio (%.1f%%). Economizando combustivel.", bufferPct)
+                self.stats.barras_alvo = 100
+                return
+            end
+
+            if bufferPct <= cfgR.buffer_energia_min then
+                if not r.ativo() then
+                    r.setAtivo(true)
+                end
+                self.estado = M.ESTADOS.OPERANDO
+            end
+
+            if not r.ativo() and bufferPct < (cfgR.buffer_energia_max - 5) then
+                r.setAtivo(true)
+                self.estado = M.ESTADOS.OPERANDO
+            end
+
+            local span = math.max(1, cfgR.buffer_energia_max - cfgR.buffer_energia_min)
+            local fatorCarga = (bufferPct - cfgR.buffer_energia_min) / span
+            fatorCarga = math.max(0, math.min(1, fatorCarga))
+
+            local nivelBase = fatorCarga * 85
+            local excessoTermico = math.max(0, tempComb - cfgR.temp_alvo_combustivel)
+            local freioTermico = (excessoTermico / 20) * 1.5
+
+            local nivelFinal = math.min(99, math.max(0, math.floor(nivelBase + freioTermico)))
+
+            r.setBarras(nivelFinal)
+            self.stats.barras_alvo = nivelFinal
+            self.motivo_alerta = string.format("[ECO EFICIENCIA] Barras: %d%% | Temp: %.1f C | Buffer: %.1f%%",
+                nivelFinal, tempComb, bufferPct)
         end
-
-        -- Se estiver em standby mas abaixo do maximo, reativa suavemente
-        if not r.ativo() and bufferPct < (cfgR.buffer_energia_max - 5) then
-            r.setAtivo(true)
-            self.estado = M.ESTADOS.OPERANDO
-        end
-
-        -- 4. Modulacao Dinamica das Barras para Maxima Eficiencia
-        -- Mapeia a insercao das barras proporcionalmente ao estado da carga (20% -> 0% barras, 85% -> 90% barras)
-        local span = math.max(1, cfgR.buffer_energia_max - cfgR.buffer_energia_min)
-        local fatorCarga = (bufferPct - cfgR.buffer_energia_min) / span
-        fatorCarga = math.max(0, math.min(1, fatorCarga))
-
-        -- Nivel base derivado do buffer de energia
-        local nivelBase = fatorCarga * 85
-
-        -- Correcao termica: se o combustivel esquentar alem do alvo (650 C),
-        -- o consumo de uranio dispara sem aumentar proporcionalmente a energia.
-        -- Adiciona freio termico suave.
-        local excessoTermico = math.max(0, tempComb - cfgR.temp_alvo_combustivel)
-        local freioTermico = (excessoTermico / 20) * 1.5
-
-        local nivelFinal = math.min(99, math.max(0, math.floor(nivelBase + freioTermico)))
-
-        -- Aplica o novo nivel de barras
-        r.setBarras(nivelFinal)
-        self.stats.barras_alvo = nivelFinal
 
         -- Atualiza calculo de eficiencia instantanea (RF por mB de combustivel)
         if consumoMB > 0.00001 then
@@ -161,13 +204,9 @@ function M.novo(cfg, perifericos)
             if self.stats.eficiencia_media_rf_mb == 0 then
                 self.stats.eficiencia_media_rf_mb = eff
             else
-                -- Media movel exponencial
                 self.stats.eficiencia_media_rf_mb = (self.stats.eficiencia_media_rf_mb * 0.9) + (eff * 0.1)
             end
         end
-
-        self.motivo_alerta = string.format("Modulando barras: %d%% | Temp: %.1f C | Buffer: %.1f%%",
-            nivelFinal, tempComb, bufferPct)
     end
 
     -- Loop de controle para Modo Ativo + Turbinas
@@ -334,6 +373,7 @@ function M.novo(cfg, perifericos)
         local dados = {
             tempo = os and (os.date and os.date("%Y-%m-%d %H:%M:%S") or os.time()) or "0",
             modo = self.modo,
+            perfil = self.perfil,
             estado = self.estado,
             alerta = self.motivo_alerta,
             reator = nil,

@@ -53,6 +53,7 @@ function M.gerarRelatorioTexto(dados, pastaDestino)
     add("================================================================================")
     add(string.format(" Data da Coleta:     %s", dataStr))
     add(string.format(" Modo do Sistema:    %s", dados.modo or "DESCONHECIDO"))
+    add(string.format(" Perfil de Operacao: %s (%s)", dados.perfil or "EFICIENCIA", (dados.perfil == "POTENCIA") and "MAXIMA POTENCIA" or "ECO EFICIENCIA"))
     add(string.format(" Status Operacional: %s", dados.estado or "DESCONHECIDO"))
     add(string.format(" Alerta / Mensagem:  %s", dados.alerta or "Nenhum"))
     add("--------------------------------------------------------------------------------")
@@ -266,11 +267,17 @@ function M.executarBenchmark(controlador, cbProgresso)
     controlador.estado = estadoOriginal
     controlador:determinarModo()
 
-    -- Encontra o melhor patamar de eficiencia
-    local melhor = resultados[1]
+    -- Encontra o melhor patamar de eficiencia e o de melhor potencia
+    local melhorEff = resultados[1]
+    local melhorPot = resultados[1]
     for _, res in ipairs(resultados) do
-        if res.eficiencia_rf_mb > (melhor.eficiencia_rf_mb or 0) then
-            melhor = res
+        if res.eficiencia_rf_mb > (melhorEff.eficiencia_rf_mb or 0) then
+            melhorEff = res
+        end
+        local valPotAtual = (res.energia_rf_t and res.energia_rf_t > 0) and res.energia_rf_t or (res.vapor_mb_t or 0)
+        local valPotMelhor = (melhorPot.energia_rf_t and melhorPot.energia_rf_t > 0) and melhorPot.energia_rf_t or (melhorPot.vapor_mb_t or 0)
+        if valPotAtual > valPotMelhor then
+            melhorPot = res
         end
     end
 
@@ -293,8 +300,10 @@ function M.executarBenchmark(controlador, cbProgresso)
     end
 
     table.insert(linhasBench, "--------------------------------------------------------------------------------")
-    table.insert(linhasBench, string.format(" PONTO DE MAXIMA EFICIENCIA ENCONTRADO: Barras em %d%% (%s RF/mB)",
-        melhor.nivel_barras, formatarNumero(melhor.eficiencia_rf_mb)))
+    table.insert(linhasBench, string.format(" [★] MELHOR POTENCIA BRUTA:    Barras em %d%% (Gera %s RF/t | %s mB/t vapor)",
+        melhorPot.nivel_barras, formatarNumero(melhorPot.energia_rf_t), formatarNumero(melhorPot.vapor_mb_t)))
+    table.insert(linhasBench, string.format(" [★] MELHOR EFICIENCIA (ECO):  Barras em %d%% (%s RF/mB de combustivel)",
+        melhorEff.nivel_barras, formatarNumero(melhorEff.eficiencia_rf_mb)))
     table.insert(linhasBench, "================================================================================")
 
     local relatorioFinal = table.concat(linhasBench, "\n")

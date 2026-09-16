@@ -79,7 +79,16 @@ function M.novo(dispositivoSaida)
         if isColor then t.setTextColor(colors.yellow) end
         t.write(" EXTREME REACTORS ")
         if isColor then t.setTextColor(colors.white) end
-        t.write("| Modo: " .. (dados.modo == "ATIVO_TURBINA" and "REATOR+TURBINA" or "REATOR PASSIVO"))
+        
+        -- Perfil de Operação
+        local perfilTxt = (dados.perfil == "POTENCIA") and "[POTENCIA]" or "[EFICIENCIA]"
+        if isColor then
+            t.setTextColor((dados.perfil == "POTENCIA") and colors.magenta or colors.lime)
+        end
+        t.write(perfilTxt .. " ")
+
+        if isColor then t.setTextColor(colors.lightGray) end
+        t.write(dados.modo == "ATIVO_TURBINA" and "TURBINA" or "PASSIVO")
 
         local statusTxt = " [" .. tostring(dados.estado) .. "] "
         t.setCursorPos(math.max(1, w - #statusTxt + 1), 1)
@@ -185,7 +194,7 @@ function M.novo(dispositivoSaida)
         t.setBackgroundColor(colors.gray)
         t.clearLine()
         if isColor then t.setTextColor(colors.white) end
-        t.write(" [R] Relatorio  [C] Benchmark  [E] SCRAM  [Q] Sair")
+        t.write(" [P] Perfil  [R] Relatorio  [C] Benchmark  [E] SCRAM  [Q] Sair")
         t.setBackgroundColor(colors.black)
     end
 

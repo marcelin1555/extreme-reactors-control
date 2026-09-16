@@ -14,6 +14,8 @@ if args[1] == "--ajuda" or args[1] == "-h" or args[1] == "--help" then
     print("=== Extreme Reactors Control ===")
     print("Uso: startup [opcoes]")
     print("  startup              Inicia o painel interativo")
+    print("  startup --potencia   Inicia forçando o perfil de Máxima Potência")
+    print("  startup --eficiencia Inicia forçando o perfil de Máxima Eficiência (Eco)")
     print("  startup --relatorio  Gera um relatorio instantaneo e sai")
     print("  startup --benchmark  Executa o teste da curva de rendimento e sai")
     return
@@ -21,6 +23,13 @@ end
 
 -- Carrega arquivo de configuracao salvo no disco, se existir
 config.carregar()
+
+-- Permite sobrescrever perfil pela linha de comando
+if args[1] == "--potencia" then
+    config.ativo.perfil_operacao = "potencia"
+elseif args[1] == "--eficiencia" then
+    config.ativo.perfil_operacao = "eficiencia"
+end
 
 -- Escaneia os componentes fisicos
 print("Escaneando perifericos...")
@@ -104,8 +113,18 @@ local function rotinaTeclado()
     while executando do
         local evento, tecla, isHeld = os.pullEvent("key")
 
+        -- Tecla [P]: Alternar Perfil (Eficiência vs Potência)
+        if tecla == keys.p then
+            local novoPerfil = ctrl:alternarPerfil()
+            local msgPerfil = "Perfil alterado para: " .. novoPerfil
+            uiTerm:notificar(msgPerfil)
+            if uiMon then uiMon:notificar(msgPerfil) end
+            local dados = ctrl:coletarSnapshot()
+            uiTerm:renderizar(dados)
+            if uiMon then uiMon:renderizar(dados) end
+
         -- Tecla [R]: Gerar Relatorio Instantaneo
-        if tecla == keys.r then
+        elseif tecla == keys.r then
             local dados = ctrl:coletarSnapshot()
             local ok, caminho = relatorios.gerarRelatorioTexto(dados)
             local msg = ok and ("Relatorio salvo: " .. fs.getName(caminho)) or "Erro ao salvar relatorio!"

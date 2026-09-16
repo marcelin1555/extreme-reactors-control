@@ -9,6 +9,9 @@ M.padrao = {
     -- Modo de operacao: "auto" (detecta passivo ou ativo+turbina), "passivo", "ativo"
     modo_operacao = "auto",
 
+    -- Perfil de Operação: "eficiencia" (menor queima de combustível) ou "potencia" (máxima geração de RF/t e vapor)
+    perfil_operacao = "eficiencia",
+
     -- Parametros do Reator
     reator = {
         -- Limiares do Buffer de Energia (% de 0 a 100)
@@ -17,8 +20,9 @@ M.padrao = {
         buffer_energia_alvo = 60,  -- Ponto de equilibrio da modulacao suave
 
         -- Parametros Termicos (°C)
-        temp_alvo_combustivel = 650,  -- Temperatura ideal para consumo eficiente
+        temp_alvo_combustivel = 650,  -- Temperatura ideal para consumo eficiente (Perfil Eficiência)
         temp_max_segura = 950,        -- Acima disso o consumo cresce desproporcionalmente
+        temp_max_potencia = 1350,     -- Limite termico em modo Potencia (trabalha quente com seguranca)
         temp_scram = 1500,            -- Desligamento de emergencia forcado
 
         -- Barras de Controle (%)
