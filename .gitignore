@@ -1,0 +1,14 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs e relatórios gerados dinamicamente em tempo de execução
+relatorios/*
+!relatorios/.gitkeep
+
+# Configuração local do jogo gerada em runtime
+config_reator.txt
+
+# Arquivos do sistema operacional
+Thumbs.db
+.DS_Store
