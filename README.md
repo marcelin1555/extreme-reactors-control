@@ -50,9 +50,14 @@ Sistema autônomo e de alta eficiência para gerenciamento de Reatores Nucleares
 
 ## 🚀 Como Instalar e Rodar
 
-### Opção A: Usando o Instalador Único (`instalar.lua`)
-Copie o conteúdo de `instalar.lua` para o seu computador no Minecraft (ou via disquete/pastebin) e digite:
+### Opção A: Instalação Direta via wget no Minecraft (Recomendado)
+No terminal do computador CC: Tweaked (com modem de internet ou HTTP habilitado), execute:
 ```bash
+wget run https://raw.githubusercontent.com/marcelin1555/extreme-reactors-control/main/instalar.lua
+```
+Ou se preferir baixar antes de rodar:
+```bash
+wget https://raw.githubusercontent.com/marcelin1555/extreme-reactors-control/main/instalar.lua instalar.lua
 instalar
 ```
 Ele extrairá todos os arquivos necessários e criará a pasta de relatórios automaticamente.
